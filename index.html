@@ -226,7 +226,7 @@ const FOODS = [
 
 /* ---------- state ---------- */
 const DEFAULT_PROFILE = {sex:'m',age:30,height:190,weight:104,goal:90,activity:1.45,pace:500,start:null};
-const S = {db:null,uid:null,sample:null,tab:'today',date:todayKey(),profile:{...DEFAULT_PROFILE},weights:{log:{}},lifts:{},days:{},open:null,synced:false};
+const S = {db:null,uid:null,sample:null,tab:'today',date:todayKey(),profile:{...DEFAULT_PROFILE},weights:{log:{}},lifts:{},myfoods:{list:[]},days:{},open:null,synced:false};
 
 function todayKey(d=new Date()){const z=new Date(d.getTime()-d.getTimezoneOffset()*6e4);return z.toISOString().slice(0,10)}
 function parseKey(k){const [y,m,d]=k.split('-').map(Number);return new Date(y,m-1,d)}
@@ -248,7 +248,7 @@ function save(key,val){
   clearTimeout(pending[key]);
   pending[key]=setTimeout(()=>{
     const body=JSON.stringify(val);
-    if(body.length>4096){toast('День слишком большой для облака, сохранён на телефоне');return}
+    if(body.length>4096){toast('Слишком много данных для облака, сохранено на телефоне');return}
     try{S.cloud.setItem(key,body,()=>{})}catch(e){}
   },600);
 }
@@ -575,7 +575,7 @@ function vFood(){
   const meals=MEALS.map(([id,name])=>{
     const items=d.food.filter(e=>e.meal===id), sum=items.reduce((a,e)=>a+e.kcal,0);
     return `<div class="card meal"><div class="row between"><h3>${name}</h3><span class="num muted" style="font-size:17px">${fmt(sum)} ккал</span></div>
-      <div style="margin-top:6px">${items.map(e=>`<div class="food"><div style="min-width:0"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${e.g?fmt(e.g)+' г · ':''}Б ${r0(e.p)} · Ж ${r0(e.f)} · У ${r0(e.c)}</div></div><span class="k">${fmt(e.kcal)}</span><button class="x" aria-label="Удалить" data-act="del-food" data-id="${e.id}">×</button></div>`).join('')}</div>
+      <div style="margin-top:6px">${items.map(e=>`<div class="food"><div style="min-width:0"><div>${esc(e.name)}</div><div class="muted" style="font-size:12px">${e.n?r1(e.n)+' шт · ':e.g?fmt(e.g)+' г · ':''}Б ${r0(e.p)} · Ж ${r0(e.f)} · У ${r0(e.c)}</div></div><span class="k">${fmt(e.kcal)}</span><button class="x" aria-label="Удалить" data-act="del-food" data-id="${e.id}">×</button></div>`).join('')}</div>
       <button class="btn ghost small" style="margin-top:8px" data-act="add-food" data-meal="${id}">+ Добавить</button></div>`;
   }).join('');
   return `
@@ -691,30 +691,62 @@ function foodMode(m){
       <button class="btn" data-act="ai-go" id="aigo">Посчитать</button><div id="aires"></div>
       <p class="note" style="margin:0">Оценку делает Claude по типичным порциям, точность ±15–20%. Если знаешь вес в граммах, напиши его.</p></div>`;
   }else{
-    b.innerHTML=`<div class="stack"><label class="field" for="mn"><span>Название</span><input id="mn" placeholder="Например: салат в столовой"></label>
+    foodCtx.per='100';
+    b.innerHTML=`<div class="stack"><label class="field" for="mn"><span>Название</span><input id="mn" placeholder="Например: сырники мамины"></label>
+      <div class="seg" role="group" aria-label="На что указаны калории"><button aria-pressed="true" data-act="mper" data-v="100">На 100 г</button><button aria-pressed="false" data-act="mper" data-v="pc">На 1 шт / порцию</button></div>
       <div class="grid2"><label class="field" for="mk"><span>Ккал</span><input id="mk" inputmode="decimal"></label><label class="field" for="mp"><span>Белки, г</span><input id="mp" inputmode="decimal"></label>
       <label class="field" for="mf"><span>Жиры, г</span><input id="mf" inputmode="decimal"></label><label class="field" for="mc"><span>Углеводы, г</span><input id="mc" inputmode="decimal"></label></div>
+      <label class="field" for="mq"><span id="mql">Сколько съел, грамм</span><input id="mq" inputmode="decimal" value="100"></label>
+      <div id="mcalc" class="num" style="font-size:22px;font-weight:700"></div>
+      <label class="row" for="msave" style="font-size:14px"><input type="checkbox" id="msave" checked style="width:22px;min-height:22px;accent-color:var(--accent)"> Сохранить в «Мои продукты»</label>
       <button class="btn" data-act="man-add">Добавить</button></div>`;
+    b.querySelectorAll('input').forEach(i=>i.addEventListener('input',manCalc));
+    manCalc();
   }
+}
+const num=sel=>parseFloat(($(sel).value||'0').replace(',','.'))||0;
+function manMult(){const q=num('#mq');return foodCtx.per==='pc'?q:q/100}
+function manCalc(){const m=manMult();$('#mcalc').textContent=fmt(num('#mk')*m)+' ккал · Б '+r0(num('#mp')*m)+' · Ж '+r0(num('#mf')*m)+' · У '+r0(num('#mc')*m)}
+function setManPer(v){
+  foodCtx.per=v;
+  document.querySelectorAll('[data-act="mper"]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.v===v));
+  $('#mql').textContent=v==='pc'?'Сколько съел, штук / порций':'Сколько съел, грамм';
+  $('#mq').value=v==='pc'?1:100; manCalc();
+}
+/* мои продукты: [название, ккал, Б, Ж, У, 1 = на штуку / 0 = на 100 г] */
+function foodById(id){
+  if(id[0]==='m'){const x=S.myfoods.list[+id.slice(1)];return {name:x[0],k:x[1],p:x[2],f:x[3],c:x[4],pc:!!x[5],mine:true}}
+  const f=FOODS[+id.slice(1)];return {name:f[0],k:f[1],p:f[2],f:f[3],c:f[4],unit:f[5],pc:false};
+}
+function upsertMine(arr){
+  const L=S.myfoods.list, i=L.findIndex(x=>x[0].toLowerCase()===arr[0].toLowerCase());
+  if(i>=0) L.splice(i,1);
+  L.unshift(arr); if(L.length>90) L.length=90;
+  save('myfoods',S.myfoods);
 }
 function listFoods(q){
   q=q.trim().toLowerCase();
-  const res=FOODS.map((f,i)=>[f,i]).filter(([f])=>!q||f[0].toLowerCase().includes(q)).slice(0,40);
-  $('#fres').innerHTML=res.length?res.map(([f,i])=>`<button data-act="fpick" data-i="${i}"><span>${f[0]}</span><span class="muted num" style="font-size:15px;white-space:nowrap">${f[1]} ккал</span></button>`).join(''):'<div class="note" style="padding:12px">Не нашёл. Попробуй «Описать словами» или «Вручную».</div>';
+  const hit=n=>!q||n.toLowerCase().includes(q);
+  const mine=S.myfoods.list.map((x,i)=>({id:'m'+i,n:x[0],k:x[1],pc:x[5]})).filter(x=>hit(x.n));
+  const base=FOODS.map((f,i)=>({id:'b'+i,n:f[0],k:f[1]})).filter(x=>hit(x.n));
+  const res=[...mine,...base].slice(0,60);
+  $('#fres').innerHTML=res.length?res.map(x=>`<button data-act="fpick" data-id="${x.id}"><span>${x.id[0]==='m'?'<b style="color:var(--accent)">★</b> ':''}${esc(x.n)}</span><span class="muted num" style="font-size:15px;white-space:nowrap">${fmt(x.k)} ккал${x.pc?' / шт':''}</span></button>`).join(''):'<div class="note" style="padding:12px">Не нашёл. Добавь его через «Вручную», и он сохранится в «Мои продукты».</div>';
 }
-function pickFood(i){
-  const f=FOODS[i]; foodCtx.pick=i;
-  const unit=f[5];
+function pickFood(id){
+  const f=foodById(id); foodCtx.pick=id;
   $('#fres').hidden=true;
-  $('#fpick').innerHTML=`<div class="card stack" style="background:var(--surface-2);border:0"><div class="row between"><b>${f[0]}</b><button class="btn ghost small" data-act="funpick">Другое</button></div>
-    <div class="muted" style="font-size:13px">на 100 г: ${f[1]} ккал · Б ${f[2]} · Ж ${f[3]} · У ${f[4]}</div>
-    <div class="row"><label class="field grow" for="fg"><span>Граммы</span><input id="fg" inputmode="decimal" value="${unit||100}"></label>
-    ${unit?`<label class="field grow" for="fu"><span>или штук</span><input id="fu" inputmode="decimal" value="1"></label>`:''}</div>
-    <div id="fcalc" class="num" style="font-size:22px;font-weight:700"></div><button class="btn" data-act="fadd">Добавить</button></div>`;
-  const upd=()=>{const g=parseFloat(($('#fg').value||'0').replace(',','.'))||0;$('#fcalc').textContent=fmt(f[1]*g/100)+' ккал · Б '+r0(f[2]*g/100)+' · Ж '+r0(f[3]*g/100)+' · У '+r0(f[4]*g/100)};
-  $('#fg').addEventListener('input',upd);
-  if(unit) $('#fu').addEventListener('input',e=>{const n=parseFloat(e.target.value.replace(',','.'))||0;$('#fg').value=r0(n*unit);upd()});
-  upd(); $('#fg').focus(); $('#fg').select();
+  $('#fpick').innerHTML=`<div class="card stack" style="background:var(--surface-2);border:0"><div class="row between"><b>${f.mine?'★ ':''}${esc(f.name)}</b><button class="btn ghost small" data-act="funpick">Другое</button></div>
+    <div class="muted" style="font-size:13px">${f.pc?'на 1 шт':'на 100 г'}: ${fmt(f.k)} ккал · Б ${f.p} · Ж ${f.f} · У ${f.c}</div>
+    <div class="row">${f.pc?'':`<label class="field grow" for="fg"><span>Граммы</span><input id="fg" inputmode="decimal" value="${f.unit||100}"></label>`}
+    ${f.pc||f.unit?`<label class="field grow" for="fu"><span>${f.pc?'Штук / порций':'или штук'}</span><input id="fu" inputmode="decimal" value="1"></label>`:''}</div>
+    <div id="fcalc" class="num" style="font-size:22px;font-weight:700"></div><button class="btn" data-act="fadd">Добавить</button>
+    ${f.mine?'<button class="btn ghost small" data-act="fdel-mine" style="color:var(--bad)">Удалить из «Моих продуктов»</button>':''}</div>`;
+  const mult=()=>f.pc?num('#fu'):num('#fg')/100;
+  const upd=()=>{const m=mult();$('#fcalc').textContent=fmt(f.k*m)+' ккал · Б '+r0(f.p*m)+' · Ж '+r0(f.f*m)+' · У '+r0(f.c*m)};
+  if(!f.pc) $('#fg').addEventListener('input',upd);
+  if(f.pc) $('#fu').addEventListener('input',upd);
+  else if(f.unit) $('#fu').addEventListener('input',()=>{$('#fg').value=r0(num('#fu')*f.unit);upd()});
+  upd(); const first=$(f.pc?'#fu':'#fg'); first.focus(); first.select();
 }
 function addEntry(e){
   const k=S.tab==='food'?S.date:todayKey();
@@ -781,16 +813,26 @@ document.addEventListener('click',e=>{
   if(a==='pick'){S.open=el.dataset.plan;render();return}
   if(a==='add-food') return openAddFood(el.dataset.meal);
   if(a==='fmode') return foodMode(el.dataset.m);
-  if(a==='fpick') return pickFood(+el.dataset.i);
+  if(a==='fpick') return pickFood(el.dataset.id);
   if(a==='funpick'){$('#fpick').innerHTML='';$('#fres').hidden=false;return}
-  if(a==='fadd'){const f=FOODS[foodCtx.pick],g=parseFloat(($('#fg').value||'0').replace(',','.'))||0;if(!g)return;
-    return addEntry({name:f[0].replace(/\s*\(.*\)$/,''),g,kcal:f[1]*g/100,p:f[2]*g/100,f:f[3]*g/100,c:f[4]*g/100})}
+  if(a==='fadd'){const f=foodById(foodCtx.pick),name=f.name.replace(/\s*\(.*\)$/,'');
+    if(f.pc){const n=num('#fu');if(!n)return;return addEntry({name,n,g:0,kcal:f.k*n,p:f.p*n,f:f.f*n,c:f.c*n})}
+    const g=num('#fg');if(!g)return;
+    return addEntry({name,g,kcal:f.k*g/100,p:f.p*g/100,f:f.f*g/100,c:f.c*g/100})}
+  if(a==='fdel-mine'){S.myfoods.list.splice(+foodCtx.pick.slice(1),1);save('myfoods',S.myfoods);$('#fpick').innerHTML='';$('#fres').hidden=false;listFoods($('#fq').value);toast('Удалено из «Моих продуктов»');return}
+  if(a==='mper') return setManPer(el.dataset.v);
   if(a==='ai-go') return aiEstimate();
   if(a==='ai-add'){const k=S.tab==='food'?S.date:todayKey();const items=foodCtx.ai;const sum=items.reduce((s,x)=>s+x.kcal,0);
     items.forEach(x=>day(k).food.push({id:Math.random().toString(36).slice(2,9),meal:foodCtx.meal,...x,kcal:r0(x.kcal),p:r1(x.p),f:r1(x.f),c:r1(x.c)}));
     saveDay(k);closeSheet();render();toast('Добавлено: '+fmt(sum)+' ккал');return}
-  if(a==='man-add'){const n=v=>parseFloat(($(v).value||'0').replace(',','.'))||0;const kc=n('#mk');if(!kc){toast('Укажи калории');return}
-    return addEntry({name:$('#mn').value.trim()||'Без названия',g:0,kcal:kc,p:n('#mp'),f:n('#mf'),c:n('#mc')})}
+  if(a==='man-add'){
+    const kc=num('#mk'),q=num('#mq'),pc=foodCtx.per==='pc',name=$('#mn').value.trim();
+    if(!kc){toast('Укажи калории');return}
+    if(!q){toast('Укажи, сколько съел');return}
+    if($('#msave').checked){if(!name){toast('Дай продукту название, чтобы сохранить');return}
+      upsertMine([name,kc,num('#mp'),num('#mf'),num('#mc'),pc?1:0])}
+    const m=manMult();
+    return addEntry({name:name||'Без названия',g:pc?0:q,n:pc?q:0,kcal:kc*m,p:num('#mp')*m,f:num('#mf')*m,c:num('#mc')*m})}
   if(a==='del-food'){const k=S.date;const d=day(k);d.food=d.food.filter(x=>x.id!==el.dataset.id);saveDay(k);render();return}
   if(a==='day'){const n=addDays(S.date,+el.dataset.n);if(n>todayKey())return;S.date=n;render();return}
   if(a==='water'){const k=todayKey(),d=day(k),n=+el.dataset.n;d.water=d.water===n?n-1:n;saveDay(k);render();return}
@@ -830,6 +872,7 @@ function loadLocal(){
   if(!S.profile.weight0) S.profile.weight0=S.profile.weight;
   S.weights=lsGet('weights')||{log:{}};
   S.lifts=lsGet('lifts')||{};
+  S.myfoods=lsGet('myfoods')||{list:[]};
   try{const t=localStorage.getItem('fit:tab');if(t&&VIEWS[t])S.tab=t}catch(e){}
 }
 async function connect(){
@@ -844,7 +887,7 @@ async function connect(){
   }catch(e){}
   if(TG.CloudStorage&&TG.isVersionAtLeast('6.9')){
     S.cloud=TG.CloudStorage;
-    const keys=['profile','weights','lifts'];
+    const keys=['profile','weights','lifts','myfoods'];
     for(let i=0;i<14;i++) keys.push(dayKeyId(addDays(todayKey(),-i)));
     const vals=await cloudGetMany(keys);
     keys.forEach((k,i)=>{
@@ -855,6 +898,7 @@ async function connect(){
       if(k==='profile') S.profile={...DEFAULT_PROFILE,...v};
       else if(k==='weights') S.weights=v;
       else if(k==='lifts') S.lifts=v;
+      else if(k==='myfoods') S.myfoods={list:v.list||[]};
       else S.days[k.slice(2)]=v;
     });
     if(!S.profile.weight0){S.profile.weight0=S.profile.weight;saveProfile()}
