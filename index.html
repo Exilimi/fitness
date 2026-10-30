@@ -107,6 +107,11 @@ textarea{resize:vertical;min-height:72px}
 .check[aria-pressed="true"]{background:var(--good);border-color:var(--good);color:#fff}
 .tip{font-size:13px;color:var(--muted);margin-top:8px}
 details summary{cursor:pointer;font-size:13px;color:var(--accent);font-weight:600;margin-top:6px;list-style:none}
+details.how summary{font-size:14px;padding-block:6px}
+.how-body{display:flex;flex-direction:column;gap:8px;margin-top:6px}
+canvas.anim{display:block;width:100%;max-width:360px;aspect-ratio:6/5;background:var(--surface-2);border-radius:12px;align-self:center}
+.anim-cue{text-align:center;font-weight:700;font-size:15px;min-height:22px}
+.vid{color:var(--accent);font-weight:600;font-size:14px;text-decoration:none}
 details summary::-webkit-details-marker{display:none}
 
 .seg{display:flex;background:var(--surface-2);border-radius:12px;padding:3px;gap:3px}
@@ -318,6 +323,188 @@ function macros(t,g){
   return `<div class="stack" style="gap:8px">${row('Белки',t.p,g.protein,'var(--p)')}${row('Жиры',t.f,g.fat,'var(--f)')}${row('Углеводы',t.c,g.carbs,'var(--c)')}</div>`;
 }
 
+/* ---------- exercise animations ----------
+   Фигура в профиль (смотрит вправо), холст 240×200, пол y=182.
+   Поза: hip — таз, t — угол корпуса (0 вниз, 90 вперёд, 180 вверх), hand/foot — цели для кистей и стоп,
+   колени и локти считаются обратной кинематикой, kh/eh — куда сгибаются колено и локоть.
+   hand2/foot2 — дальние рука и нога, ul/fl — видимая длина плеча и предплечья (ракурс). */
+const ERRS={
+  A0:'пятки отрываются, колени заваливаются внутрь, спина округляется внизу.',
+  A1:'спина круглая, вместо наклона получается присед, гантели далеко от ног.',
+  A2:'локти разведены под 90°, таз отрывается от скамьи, отбив от груди.',
+  A3:'раскачивание корпусом, тяга одними руками без сведения лопаток.',
+  A4:'таз провисает или задран вверх, голова опущена.',
+  B0:'поясница отрывается от спинки, колени выпрямляются до щелчка или сводятся внутрь.',
+  B1:'тяга за голову, сильный отклон назад, рывки.',
+  B2:'прогиб в пояснице, гантели уходят вперёд, неполная амплитуда.',
+  B3:'колено передней ноги уходит внутрь, корпус заваливается вперёд.',
+  B4:'слишком большой вес, тяга к груди вместо лица, отклон назад.',
+  B5:'поясница отрывается от пола, движения слишком быстрые.',
+  C0:'прогиб в пояснице вверху, толчок носками вместо пяток.',
+  C1:'слишком крутой наклон скамьи, лопатки отрываются, локти разведены под 90°.',
+  C2:'скручивание корпуса, рывок по инерции, круглая спина.',
+  C3:'таз поднимается от скамьи, вес бросается вниз.',
+  C4:'подъём выше плеч, раскачивание корпусом, слишком тяжёлые гантели.',
+  C5:'сутулость, гантели бьют по ногам, слишком длинные шаги.'
+};
+const BENCH_LEGS=(x1,x2,y)=>[{l:[x1,y,x1,182]},{l:[x2,y,x2,182]}];
+const ANIM={
+  A0:{p:[{hip:[116,91],t:180,hand:[130,58],foot:[120,176],kh:[1,0],eh:[0,1]},{hip:[90,136],t:148,hand:[124,104]}],
+      props:[{ty:'dbv',at:'hand'}],cue:['Вниз: таз назад и вниз, 2 с','Вверх: толкай пол всей стопой']},
+  A1:{p:[{hip:[116,91],t:180,hand:[119,97],foot:[120,176],kh:[1,0],eh:[-1,0]},{hip:[98,96],t:102,hand:[150,146]}],
+      props:[{ty:'db',at:'hand'}],cue:['Вниз: таз назад, спина прямая','Вверх: подай таз вперёд']},
+  A2:{st:[{r:[40,128,135,8]},...BENCH_LEGS(55,160,136)],
+      p:[{hip:[84,122],t:90,hand:[138,66],foot:[62,176],kh:[0,-1],eh:[0,1]},{hand:[138,108],ul:12,fl:24}],
+      props:[{ty:'db',at:'hand'}],cue:['Вниз к груди, 2 с','Вверх: выжми гантели']},
+  A3:{st:[{r:[55,150,60,8]},...BENCH_LEGS(62,108,158),{r:[205,30,12,152]},{l:[166,148,172,182]}],
+      p:[{hip:[84,144],t:162,hand:[150,108],foot:[162,165],fa:160,kh:[0,-1],eh:[0,1]},{t:188,hand:[104,124],eh:[-1,0]}],
+      props:[{ty:'cable',at:'hand',from:[205,118]},{ty:'grip',at:'hand'}],cue:['Тяни к животу, сведи лопатки','Отпускай медленно']},
+  A4:{st:[{l:[20,182,225,182]}],
+      p:[{hip:[124,151],t:102.5,hand:[198,172],foot:[40,170],fa:0,kh:[0,-1],eh:[-0.3,1]},{hip:[124,149]}],
+      props:[],cue:['Тело прямой линией','Дыши ровно']},
+  B0:{st:[{l:[30,104,92,162],w:8},{r:[70,158,40,8]},{l:[95,166,95,182]}],
+      p:[{hip:[84,150],t:228,hand:[88,146],foot:[140,96],fa:225,kh:[-0.7,-0.7],eh:[0,1]},{foot:[112,124]}],
+      props:[{ty:'platform',at:'foot',ang:225,off:[5,-5]}],cue:['Опускай медленно, до 90° в коленях','Выжимай пятками, не замыкай колени']},
+  B1:{st:[{r:[70,140,50,8]},...BENCH_LEGS(80,110,148),{c:[142,120,7]}],
+      p:[{hip:[96,136],t:188,hand:[96,26],foot:[150,176],kh:[0,-1],eh:[-1,0.5]},{hand:[106,80],ul:22,fl:26}],
+      props:[{ty:'cable',at:'hand',from:[100,0]},{ty:'grip',at:'hand'}],cue:['Тяни локтями вниз к рёбрам','Вверх плавно']},
+  B2:{st:[{r:[80,60,8,82]},{r:[80,140,45,8]},...BENCH_LEGS(88,118,148)],
+      p:[{hip:[100,138],t:180,hand:[102,26],foot:[150,176],kh:[0,-1],eh:[0.3,1]},{hand:[108,74],ul:14,fl:26}],
+      props:[{ty:'db',at:'hand'}],cue:['Опускай до уровня ушей','Выжимай вверх']},
+  B3:{p:[{hip:[118,91],t:180,hand:[119,97],hand2:[117,97],foot:[122,176],foot2:[118,176],kh:[1,0],kh2:[1,0],eh:[-1,0]},
+         {hip:[96,134],hand:[97,140],hand2:[95,140],foot2:[58,168],fa2:40,kh2:[0,1]}],
+      props:[],cue:['Шаг назад, опускайся вертикально','Толкайся передней ногой']},
+  B4:{st:[{r:[208,20,10,162]}],
+      p:[{hip:[96,91],t:186,hand:[148,52],foot:[100,176],foot2:[92,176],kh:[1,0],eh:[0,1]},{hand:[108,30],eh:[-0.5,-1],ul:26}],
+      props:[{ty:'cable',at:'hand',from:[208,48]},{ty:'grip',at:'hand'}],cue:['Тяни к лицу, локти высоко','Возвращай медленно']},
+  B5:{st:[{l:[10,182,230,182]}],
+      p:[{hip:[100,172],t:90,hand:[154,114],hand2:[150,114],foot:[60,128],foot2:[62,130],fa:180,fa2:180,kh:[0.3,-1],eh:[1,0]},
+         {hand:[210,168],foot2:[16,162],fa2:250}],
+      props:[],cue:['Рука и противоположная нога уходят медленно','Поясница прижата к полу']},
+  C0:{st:[{r:[14,146,58,36]}],
+      p:[{hip:[112,172],t:233,hand:[112,160],foot:[150,176],kh:[0,-1],eh:[0,-1]},{hip:[122,140],t:270,hand:[122,128]}],
+      props:[{ty:'bb',at:'hip',off:[0,-12]}],cue:['Подъём ягодицами, пауза вверху','Опускай таз медленно']},
+  C1:{st:[{p:[[98,150],[28,110],[24,118],[94,158]]},{r:[90,150,35,7]},{l:[100,157,100,182]},{l:[40,122,40,182]}],
+      p:[{hip:[92,144],t:240,hand:[50,60],foot:[140,176],kh:[0,-1],eh:[0.3,1]},{hand:[56,106],ul:14,fl:24}],
+      props:[{ty:'db',at:'hand'}],cue:['Опускай к верху груди, 2 с','Выжимай вверх']},
+  C2:{st:[{r:[50,152,145,8]},...BENCH_LEGS(60,185,160)],
+      p:[{hip:[100,110],t:90,hand:[154,166],hand2:[166,152],foot:[84,176],foot2:[56,150],fa2:270,kh:[1,0],kh2:[0,1],eh:[-0.3,-1],eh2:[1,0]},
+         {hand:[126,120]}],
+      props:[{ty:'db',at:'hand'}],cue:['Тяни локоть к бедру','Опускай до растяжения']},
+  C3:{st:[{r:[20,152,170,8]},...BENCH_LEGS(40,170,160)],
+      p:[{hip:[100,146],t:90,hand:[190,156],foot:[16,148],fa:0,kh:[-1,1],eh:[0,1]},{foot:[62,104],fa:270}],
+      props:[{ty:'pad',at:'foot',off:[0,-8]}],cue:['Сгибай, таз прижат','Опускай 2–3 с']},
+  C4:{front:true,p:[{hip:[120,91],handL:[100,98],handR:[140,98],footL:[110,176],footR:[130,176]},{handL:[48,48],handR:[192,48]}],
+      props:[],cue:['Поднимай до уровня плеч','Опускай медленно']},
+  C5:{p:[{hip:[118,91],t:180,hand:[121,97],hand2:[115,97],foot:[138,176],foot2:[100,174],fa2:70,kh:[1,0],kh2:[1,0],eh:[-1,0]},
+         {foot:[100,174],fa:70,foot2:[138,176],fa2:90}],
+      props:[{ty:'db',at:'hand2'},{ty:'db',at:'hand'}],cue:['Шаг: плечи вниз, корпус ровно','Шаг: короткий и уверенный']}
+};
+const POSE_DEF={fa:90,ul:30,fl:28};
+for(const a of Object.values(ANIM)){const b={...POSE_DEF,...a.p[0]};a.p=[b,{...b,...a.p[1]}]}
+
+const dirv=a=>{const r=a*Math.PI/180;return [Math.sin(r),Math.cos(r)]};
+function ik(A,B,l1,l2,hint){
+  const dx=B[0]-A[0],dy=B[1]-A[1];let d=Math.hypot(dx,dy)||1;const ux=dx/d,uy=dy/d;
+  d=Math.min(Math.max(d,Math.abs(l1-l2)+0.5),l1+l2-0.01);
+  const a=Math.acos(Math.max(-1,Math.min(1,(l1*l1+d*d-l2*l2)/(2*l1*d)))),base=Math.atan2(uy,ux);
+  const c1=[A[0]+l1*Math.cos(base+a),A[1]+l1*Math.sin(base+a)],c2=[A[0]+l1*Math.cos(base-a),A[1]+l1*Math.sin(base-a)];
+  const m=[A[0]+ux*d/2,A[1]+uy*d/2];
+  const J=((c1[0]-m[0])*hint[0]+(c1[1]-m[1])*hint[1])>=((c2[0]-m[0])*hint[0]+(c2[1]-m[1])*hint[1])?c1:c2;
+  const ex=B[0]-J[0],ey=B[1]-J[1],el=Math.hypot(ex,ey)||1;
+  return [J,[J[0]+ex/el*l2,J[1]+ey/el*l2]];
+}
+function lerpPose(A,B,k){
+  const o={};
+  for(const key of new Set([...Object.keys(A),...Object.keys(B)])){
+    const a=A[key]??B[key],b=B[key]??A[key];
+    o[key]=Array.isArray(a)?a.map((v,i)=>v+(b[i]-v)*k):typeof a==='number'?a+(b-a)*k:a;
+  }
+  return o;
+}
+function stroke(ctx,pts,w,c){ctx.strokeStyle=c;ctx.lineWidth=w;ctx.lineCap='round';ctx.lineJoin='round';ctx.beginPath();ctx.moveTo(pts[0][0],pts[0][1]);for(let i=1;i<pts.length;i++)ctx.lineTo(pts[i][0],pts[i][1]);ctx.stroke()}
+function drawStatic(ctx,st,col){
+  for(const s of st||[]){
+    ctx.fillStyle=col.eq;ctx.strokeStyle=col.mut;ctx.lineWidth=s.w||2;ctx.lineCap='round';
+    if(s.r){ctx.beginPath();ctx.roundRect?ctx.roundRect(...s.r,3):ctx.rect(...s.r);ctx.fill();ctx.stroke()}
+    else if(s.p){ctx.beginPath();s.p.forEach((q,i)=>i?ctx.lineTo(...q):ctx.moveTo(...q));ctx.closePath();ctx.fill();ctx.stroke()}
+    else if(s.l){stroke(ctx,[[s.l[0],s.l[1]],[s.l[2],s.l[3]]],s.w||3,col.mut)}
+    else if(s.c){ctx.beginPath();ctx.arc(...s.c,0,7);ctx.fill();ctx.stroke()}
+  }
+}
+function drawProp(ctx,pr,P,col){
+  const x=P[0]+(pr.off?pr.off[0]:0),y=P[1]+(pr.off?pr.off[1]:0);
+  ctx.fillStyle=col.acc;
+  if(pr.ty==='db'||pr.ty==='dbv'){
+    ctx.save();ctx.translate(x,y);if(pr.ty==='dbv')ctx.rotate(Math.PI/2);
+    ctx.fillStyle=col.mut;ctx.fillRect(-8,-1.5,16,3);ctx.fillStyle=col.acc;ctx.fillRect(-11,-6,5,12);ctx.fillRect(6,-6,5,12);ctx.restore();
+  }else if(pr.ty==='bb'){
+    ctx.beginPath();ctx.arc(x,y,14,0,7);ctx.fillStyle=col.acc;ctx.fill();ctx.beginPath();ctx.arc(x,y,3,0,7);ctx.fillStyle=col.bg;ctx.fill();
+  }else if(pr.ty==='grip'){ctx.fillStyle=col.mut;ctx.fillRect(x-4,y-3,8,6)}
+  else if(pr.ty==='cable'){stroke(ctx,[pr.from,[x,y]],1.5,col.mut);ctx.beginPath();ctx.arc(pr.from[0],pr.from[1],4,0,7);ctx.fillStyle=col.mut;ctx.fill()}
+  else if(pr.ty==='pad'){ctx.beginPath();ctx.arc(x,y,6,0,7);ctx.fill()}
+  else if(pr.ty==='platform'){const d=dirv(pr.ang);stroke(ctx,[[x-d[0]*26,y-d[1]*26],[x+d[0]*26,y+d[1]*26]],6,col.acc)}
+}
+function drawSide(ctx,a,p,col){
+  const td=dirv(p.t),sh=[p.hip[0]+52*td[0],p.hip[1]+52*td[1]],head=[sh[0]+17*td[0],sh[1]+17*td[1]];
+  const hand2=p.hand2||[p.hand[0]-3,p.hand[1]-2],foot2=p.foot2||[p.foot[0]-5,p.foot[1]];
+  const [k1,an1]=ik(p.hip,p.foot,44,42,p.kh),[k2,an2]=ik(p.hip,foot2,44,42,p.kh2||p.kh);
+  const [e1,w1]=ik(sh,p.hand,p.ul,p.fl,p.eh),[e2,w2]=ik(sh,hand2,p.ul,p.fl,p.eh2||p.eh);
+  const ft=(an,fa)=>{const d=dirv(fa);return [an,[an[0]+13*d[0],an[1]+13*d[1]]]};
+  const at={hand:w1,hand2:w2,foot:an1,hip:p.hip};
+  stroke(ctx,[p.hip,k2,an2],7,col.far);stroke(ctx,ft(an2,p.fa2??p.fa),5,col.far);
+  stroke(ctx,[sh,e2,w2],6,col.far);
+  for(const pr of a.props) if(pr.at==='hand2') drawProp(ctx,pr,w2,col);
+  stroke(ctx,[p.hip,sh],13,col.ink);
+  ctx.beginPath();ctx.arc(head[0],head[1],10,0,7);ctx.fillStyle=col.ink;ctx.fill();
+  stroke(ctx,[p.hip,k1,an1],8,col.ink);stroke(ctx,ft(an1,p.fa),5,col.ink);
+  stroke(ctx,[sh,e1,w1],7,col.ink);
+  for(const pr of a.props) if(pr.at!=='hand2') drawProp(ctx,pr,at[pr.at],col);
+}
+function drawFront(ctx,a,p,col){
+  const H=p.hip,SL=[H[0]-18,H[1]-52],SR=[H[0]+18,H[1]-52],HL=[H[0]-9,H[1]],HR=[H[0]+9,H[1]];
+  const [kl,al]=ik(HL,p.footL,44,42,[-1,0]),[kr,ar]=ik(HR,p.footR,44,42,[1,0]);
+  const [el,wl]=ik(SL,p.handL,30,28,[0,1]),[er,wr]=ik(SR,p.handR,30,28,[0,1]);
+  stroke(ctx,[HL,kl,al],8,col.ink);stroke(ctx,[HR,kr,ar],8,col.ink);
+  ctx.fillStyle=col.ink;ctx.beginPath();ctx.moveTo(...SL);ctx.lineTo(...SR);ctx.lineTo(HR[0]+2,HR[1]);ctx.lineTo(HL[0]-2,HL[1]);ctx.closePath();ctx.fill();
+  stroke(ctx,[SL,SR],8,col.ink);
+  ctx.beginPath();ctx.arc(H[0],H[1]-69,10,0,7);ctx.fill();
+  stroke(ctx,[SL,el,wl],7,col.ink);stroke(ctx,[SR,er,wr],7,col.ink);
+  drawProp(ctx,{ty:'dbv'},wl,col);drawProp(ctx,{ty:'dbv'},wr,col);
+}
+const SEG=[500,1400,400,1100],CYCLE=SEG.reduce((s,x)=>s+x,0);
+const ease=k=>0.5-0.5*Math.cos(Math.PI*k);
+const reduceMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
+function animFrame(key,now){
+  const a=ANIM[key];let ms=now%CYCLE,k,cue;
+  if(ms<SEG[0]){k=0;cue=0}else if((ms-=SEG[0])<SEG[1]){k=ease(ms/SEG[1]);cue=0}
+  else if((ms-=SEG[1])<SEG[2]){k=1;cue=1}else{ms-=SEG[2];k=1-ease(ms/SEG[3]);cue=1}
+  if(reduceMotion) k=k<0.5?0:1;
+  return {p:lerpPose(a.p[0],a.p[1],k),cue};
+}
+let animOn=false;
+function animLoop(now){
+  const list=document.querySelectorAll('details.how[open] canvas.anim');
+  if(!list.length){animOn=false;return}
+  const cs=getComputedStyle(document.documentElement),v=n=>cs.getPropertyValue(n).trim();
+  const col={ink:v('--ink'),far:v('--muted'),mut:v('--muted'),acc:v('--accent'),eq:v('--surface'),bg:v('--surface-2')};
+  for(const cv of list){
+    const key=cv.dataset.key,a=ANIM[key];if(!a) continue;
+    const dpr=Math.min(3,window.devicePixelRatio||2);
+    if(cv.width!==240*dpr){cv.width=240*dpr;cv.height=200*dpr}
+    const ctx=cv.getContext('2d');ctx.setTransform(dpr,0,0,dpr,0,0);ctx.clearRect(0,0,240,200);
+    stroke(ctx,[[6,182],[234,182]],2,col.mut);
+    const {p,cue}=animFrame(key,now);
+    drawStatic(ctx,a.st,col);
+    a.front?drawFront(ctx,a,p,col):drawSide(ctx,a,p,col);
+    const c=cv.parentNode.querySelector('.anim-cue');if(c&&c.textContent!==a.cue[cue])c.textContent=a.cue[cue];
+  }
+  requestAnimationFrame(animLoop);
+}
+function kickAnim(){if(!animOn){animOn=true;requestAnimationFrame(animLoop)}}
+const HOW=new Set();
+document.addEventListener('toggle',e=>{const d=e.target;if(!d.classList||!d.classList.contains('how'))return;d.open?HOW.add(d.dataset.key):HOW.delete(d.dataset.key);kickAnim()},true);
+
 /* ---------- views ---------- */
 function vToday(){
   const k=todayKey(), g=targets(), t=totals(k), d=day(k), plan=planFor(k), ph=phase();
@@ -365,7 +552,12 @@ function vTrain(){
     return `<div class="ex"><h3>${i+1}. ${e.n}</h3>
       <div class="meta"><span class="plate">${e.s} × ${e.r}</span><span class="plate">отдых ${e.rest} с</span>${last?`<span class="plate" style="color:var(--accent)">прошлый раз ${esc(last.w)} кг × ${esc(last.r)}</span>`:''}</div>
       <div class="sets"><div class="set label" style="font-size:10px"><span></span><span style="text-align:center">вес, кг</span><span style="text-align:center">повторы</span><span></span></div>${rows}</div>
-      <details><summary>Техника</summary><div class="tip">${e.tip}</div></details></div>`;
+      <details class="how" data-key="${sel}${i}" ${HOW.has(sel+i)?'open':''}><summary>▶ Как делать правильно</summary>
+        <div class="how-body"><canvas class="anim" data-key="${sel}${i}" role="img" aria-label="Анимация: ${esc(e.n)}"></canvas>
+        <div class="anim-cue"></div>
+        <div class="tip">${e.tip}</div>
+        <div class="tip"><b style="color:var(--bad)">Частые ошибки:</b> ${ERRS[sel+i]||''}</div>
+        <a class="vid" href="https://www.youtube.com/results?search_query=${encodeURIComponent(e.n+' техника выполнения')}" target="_blank" rel="noopener">Видео с техникой на YouTube ↗</a></div></details></div>`;
   }).join('');
   return `
   <div class="week">${week}</div>
@@ -470,6 +662,7 @@ function render(){
   $('#view').innerHTML=fn();
   if(active){const el=document.getElementById(active);if(el&&el.tagName==='INPUT'){el.focus();try{const l=el.value.length;el.setSelectionRange(l,l)}catch(e){}}}
   document.querySelectorAll('#tabs button').forEach(b=>b.setAttribute('aria-current',b.dataset.tab===S.tab?'page':'false'));
+  kickAnim();
 }
 function go(tab){S.tab=tab;try{localStorage.setItem('fit:tab',tab)}catch(e){};render();window.scrollTo(0,0)}
 
@@ -577,6 +770,8 @@ function curPlan(){return S.open||planFor(todayKey())||'A'}
 
 /* ---------- events ---------- */
 document.addEventListener('click',e=>{
+  const vid=e.target.closest('a.vid');
+  if(vid&&TG){e.preventDefault();try{TG.openLink(vid.href)}catch(err){window.open(vid.href,'_blank')}return}
   const el=e.target.closest('[data-act],[data-tab]'); if(!el) return;
   if(el.dataset.tab){go(el.dataset.tab);return}
   const a=el.dataset.act;
