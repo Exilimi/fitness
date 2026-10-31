@@ -241,24 +241,70 @@ function lsSet(k,v){try{localStorage.setItem('fit:'+k,JSON.stringify(v))}catch(e
 
 /* Telegram CloudStorage: синхронизация между устройствами, до 4096 символов на ключ */
 const TG=window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData?Telegram.WebApp:null;
+/* Каждый документ несёт _ts (время изменения). Пишем в облако сразу; неотправленные ключи помним в fit:__dirty
+   и досылаем при следующем запуске. Длинные значения режем на части: key = "#N", key__0..key__N-1. */
 const pending={};
-function save(key,val){
-  lsSet(key,val);
+const CHUNK=4000;
+function dirtySet(){return new Set(lsGet('__dirty')||[])}
+function markDirty(key,on){const d=dirtySet();on?d.add(key):d.delete(key);lsSet('__dirty',[...d])}
+function save(key,val,delay=0){
+  val._ts=Date.now();
+  lsSet(key,val); markDirty(key,true);
   if(!S.cloud) return;
   clearTimeout(pending[key]);
-  pending[key]=setTimeout(()=>{
-    const body=JSON.stringify(val);
-    if(body.length>4096){toast('Слишком много данных для облака, сохранено на телефоне');return}
-    try{S.cloud.setItem(key,body,()=>{})}catch(e){}
-  },600);
+  if(delay) pending[key]=setTimeout(()=>push(key),delay); else push(key);
 }
-function cloudGetMany(keys){
-  return new Promise(res=>{
-    try{S.cloud.getItems(keys,(err,vals)=>{
-      if(err||!vals) return res(keys.map(()=>undefined));
-      res(keys.map(k=>{const v=vals[k];if(!v) return null;try{return JSON.parse(v)}catch(e){return null}}));
-    })}catch(e){res(keys.map(()=>undefined))}
+function push(key){
+  delete pending[key];
+  const val=lsGet(key); if(!val||!S.cloud) return;
+  const ts=val._ts;
+  cloudSet(key,JSON.stringify(val),ok=>{ const cur=lsGet(key); if(ok&&cur&&cur._ts===ts) markDirty(key,false); renderSync(); });
+}
+function flushAll(){for(const k of Object.keys(pending)){clearTimeout(pending[k]);push(k)}}
+function cloudCall(fn,...args){return new Promise(res=>{try{S.cloud[fn](...args,(err,v)=>res(err?{err}:{v}))}catch(e){res({err:e})}})}
+async function cloudSet(key,str,cb){
+  if(str.length<=CHUNK){const r=await cloudCall('setItem',key,str);return cb(!r.err)}
+  const parts=[];for(let i=0;i<str.length;i+=CHUNK) parts.push(str.slice(i,i+CHUNK));
+  const rs=await Promise.all(parts.map((p,i)=>cloudCall('setItem',key+'__'+i,p)));
+  if(rs.some(r=>r.err)) return cb(false);
+  const r=await cloudCall('setItem',key,'#'+parts.length);cb(!r.err);
+}
+async function cloudGetMany(keys){
+  const r=await cloudCall('getItems',keys);
+  if(r.err||!r.v) return keys.map(()=>undefined);
+  const raw=keys.map(k=>r.v[k]||'');
+  const chunkKeys=[];
+  raw.forEach((s,i)=>{if(s[0]==='#') for(let j=0;j<+s.slice(1);j++) chunkKeys.push(keys[i]+'__'+j)});
+  let parts={};
+  if(chunkKeys.length){const c=await cloudCall('getItems',chunkKeys);if(c.err||!c.v) return keys.map(()=>undefined);parts=c.v}
+  return raw.map((s,i)=>{
+    if(!s) return null;
+    if(s[0]==='#'){let t='';for(let j=0;j<+s.slice(1);j++){const p=parts[keys[i]+'__'+j];if(p==null) return undefined;t+=p}s=t}
+    try{return JSON.parse(s)}catch(e){return undefined}
   });
+}
+/* локальная версия новее облачной (или облака нет) → оставляем локальную и досылаем */
+function mergeKey(k,cloudVal){
+  const loc=lsGet(k);
+  if(cloudVal===undefined){if(loc&&dirtySet().has(k)) push(k);return loc}
+  if(cloudVal===null||(loc&&(loc._ts||0)>(cloudVal._ts||0))){if(loc) push(k);return loc}
+  lsSet(k,cloudVal);markDirty(k,false);return cloudVal;
+}
+function renderSync(){const el=document.getElementById('sync');if(el) el.textContent=syncText()}
+function syncText(){
+  if(!S.cloud) return 'Данные сохраняются только на этом устройстве. Открывай приложение кнопкой бота в Telegram, чтобы они попадали в облако.';
+  const n=dirtySet().size;
+  return n?`Ждут отправки в облако Telegram: ${n}. Отправятся автоматически.`:'Все данные сохранены в облаке Telegram.';
+}
+const fetchedDays=new Set(),loadingDays=new Set();
+const MUTATING=new Set(['add-food','fadd','man-add','ai-add','del-food','water','weight-save','set-d','finish','fdel-mine']);
+function isReady(){return (S.ready||!TG)&&(!S.cloud||fetchedDays.has(S.tab==='food'?S.date:todayKey()))}
+async function ensureDay(k){
+  if(!S.cloud||fetchedDays.has(k)||loadingDays.has(k)) return;
+  loadingDays.add(k);
+  const id=dayKeyId(k),[v]=await cloudGetMany([id]);
+  loadingDays.delete(k); fetchedDays.add(k);
+  const m=mergeKey(id,v); if(m) S.days[k]=m; render();
 }
 function haptic(kind){try{if(!TG)return;kind==='ok'?TG.HapticFeedback.notificationOccurred('success'):TG.HapticFeedback.impactOccurred('medium')}catch(e){}}
 function dayKeyId(k){return 'd-'+k}
@@ -650,14 +696,14 @@ function vProfile(){
     ${f('p-start','Начало программы',`<input id="p-start" type="date" data-p="start" value="${p.start||''}">`)}
   </div>
   <div class="card"><p class="note" style="margin:0">Перед стартом при таком весе стоит показаться терапевту, особенно если есть давление, боли в коленях или спине. Если во время упражнения появляется острая боль — прекращай его.</p></div>
-  <div class="sync" id="sync">${S.cloud?'Данные сохраняются в облаке Telegram и доступны в Telegram на любом устройстве.':'Данные сохраняются только на этом устройстве.'}</div>`;
+  <div class="sync" id="sync">${syncText()}</div>`;
 }
 
 const VIEWS={today:['Сегодня',vToday],train:['Тренировки',vTrain],food:['Питание',vFood],progress:['Прогресс',vProgress],profile:['Профиль',vProfile]};
 function render(){
   const [t,fn]=VIEWS[S.tab];
   $('#title').textContent=t;
-  $('#sub').textContent=S.tab==='today'?new Date().toLocaleDateString('ru-RU',{weekday:'short',day:'numeric',month:'long'}):'';
+  $('#sub').textContent=!isReady()?'синхронизация…':S.tab==='today'?new Date().toLocaleDateString('ru-RU',{weekday:'short',day:'numeric',month:'long'}):'';
   const active=document.activeElement&&document.activeElement.id;
   $('#view').innerHTML=fn();
   if(active){const el=document.getElementById(active);if(el&&el.tagName==='INPUT'){el.focus();try{const l=el.value.length;el.setSelectionRange(l,l)}catch(e){}}}
@@ -805,6 +851,7 @@ document.addEventListener('click',e=>{
   const vid=e.target.closest('a.vid');
   if(vid&&TG){e.preventDefault();try{TG.openLink(vid.href)}catch(err){window.open(vid.href,'_blank')}return}
   const el=e.target.closest('[data-act],[data-tab]'); if(!el) return;
+  if(el.dataset.act&&MUTATING.has(el.dataset.act)&&!isReady()){toast('Загружаю данные из облака, секунду…');return}
   if(el.dataset.tab){go(el.dataset.tab);return}
   const a=el.dataset.act;
   if(a==='close-bg'){if(e.target===el)closeSheet();return}
@@ -834,7 +881,7 @@ document.addEventListener('click',e=>{
     const m=manMult();
     return addEntry({name:name||'Без названия',g:pc?0:q,n:pc?q:0,kcal:kc*m,p:num('#mp')*m,f:num('#mf')*m,c:num('#mc')*m})}
   if(a==='del-food'){const k=S.date;const d=day(k);d.food=d.food.filter(x=>x.id!==el.dataset.id);saveDay(k);render();return}
-  if(a==='day'){const n=addDays(S.date,+el.dataset.n);if(n>todayKey())return;S.date=n;render();return}
+  if(a==='day'){const n=addDays(S.date,+el.dataset.n);if(n>todayKey())return;S.date=n;render();ensureDay(n);return}
   if(a==='water'){const k=todayKey(),d=day(k),n=+el.dataset.n;d.water=d.water===n?n-1:n;saveDay(k);render();return}
   if(a==='log-weight') return openWeight();
   if(a==='weight-save'){const v=parseFloat(($('#wv').value||'').replace(',','.'));if(!v||v<30||v>300){toast('Проверь вес');return}
@@ -855,12 +902,14 @@ document.addEventListener('click',e=>{
 });
 document.addEventListener('input',e=>{
   const el=e.target;
+  if((el.dataset.act==='set-w'||el.dataset.act==='set-r')&&!isReady()){render();return}
   if(el.dataset.act==='set-w'||el.dataset.act==='set-r'){
-    const c=setCell(curPlan(),+el.dataset.i,+el.dataset.j);c[el.dataset.act==='set-w'?'w':'r']=el.value.trim();saveDay(todayKey());
+    const c=setCell(curPlan(),+el.dataset.i,+el.dataset.j);c[el.dataset.act==='set-w'?'w':'r']=el.value.trim();save(dayKeyId(todayKey()),day(todayKey()),400);
   }
 });
 document.addEventListener('change',e=>{
   const el=e.target, k=el.dataset.p; if(!k) return;
+  if(!isReady()){render();return}
   let v=el.value;
   if(['age','height','goal','activity','pace'].includes(k)){v=parseFloat(String(v).replace(',','.'));if(!v)return render()}
   S.profile[k]=v||null; saveProfile(); render(); toast('Сохранено');
@@ -889,23 +938,29 @@ async function connect(){
     S.cloud=TG.CloudStorage;
     const keys=['profile','weights','lifts','myfoods'];
     for(let i=0;i<14;i++) keys.push(dayKeyId(addDays(todayKey(),-i)));
-    const vals=await cloudGetMany(keys);
+    for(const k of dirtySet()) if(!keys.includes(k)) keys.push(k);
+    const vals=await Promise.race([cloudGetMany(keys),new Promise(r=>setTimeout(()=>r(keys.map(()=>undefined)),6000))]);
     keys.forEach((k,i)=>{
-      const v=vals[i];
-      if(v===undefined) return;
-      if(v===null){const loc=lsGet(k);if(loc) save(k,loc);return}
-      lsSet(k,v);
+      const v=mergeKey(k,vals[i]);
+      if(!v) return;
       if(k==='profile') S.profile={...DEFAULT_PROFILE,...v};
       else if(k==='weights') S.weights=v;
       else if(k==='lifts') S.lifts=v;
-      else if(k==='myfoods') S.myfoods={list:v.list||[]};
-      else S.days[k.slice(2)]=v;
+      else if(k==='myfoods') S.myfoods={list:v.list||[],_ts:v._ts};
+      else if(k.startsWith('d-')){S.days[k.slice(2)]=v;fetchedDays.add(k.slice(2))}
     });
     if(!S.profile.weight0){S.profile.weight0=S.profile.weight;saveProfile()}
     else if(vals[0]===null&&!lsGet('profile')) save('profile',S.profile);
   }
+  S.ready=true;
   if(S.tab!=='profile'||!document.activeElement||document.activeElement===document.body) render();
 }
+document.addEventListener('visibilitychange',()=>{
+  if(document.visibilityState==='hidden'){flushAll();return}
+  const t=todayKey(); if(S.date>t||S.lastToday!==t){S.lastToday=t;S.date=t;render()}
+});
+window.addEventListener('pagehide',flushAll);
+S.lastToday=todayKey();
 loadLocal(); render(); connect();
 </script>
 </body>
